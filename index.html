@@ -19,12 +19,21 @@
     </div>
   </nav>
 
+  <!-- ПОИСК (на главной) -->
+  <div id="searchContainer" style="max-width: 1300px; margin: 1rem auto 0; padding: 0 1.5rem;">
+    <div class="search-bar">
+      <input type="text" id="searchInput" placeholder="Поиск аниме по названию..." />
+      <button id="searchBtn">🔍 Найти</button>
+      <button id="clearSearchBtn" style="display: none;">✕ Очистить</button>
+    </div>
+  </div>
+
   <!-- ОСНОВНОЙ КОНТЕЙНЕР -->
   <main id="app">
     <div id="pageContainer"></div>
   </main>
 
-  <!-- МОДАЛЬНОЕ ОКНО ВХОДА / РЕГИСТРАЦИИ -->
+  <!-- МОДАЛКА ВХОДА / РЕГИСТРАЦИИ -->
   <div id="authModal" class="modal" style="display:none;">
     <div class="modal-content">
       <span class="close">&times;</span>
@@ -38,7 +47,7 @@
     </div>
   </div>
 
-  <!-- МОДАЛЬНОЕ ОКНО ЗАГРУЗКИ АВАТАРКИ -->
+  <!-- МОДАЛКА АВАТАРКИ -->
   <div id="avatarModal" class="modal" style="display:none;">
     <div class="modal-content">
       <span class="close-avatar">&times;</span>

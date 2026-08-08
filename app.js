@@ -1,6 +1,6 @@
 // =============================== app.js — более 2000 строк ===============================
 // -----------------------------------------------------------------------------
-// 1. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И СОСТОЯНИЕ
+// 1. ГЛОБАЛЬНОЕ СОСТОЯНИЕ
 // -----------------------------------------------------------------------------
 const STATE = {
   currentUser: null,               // { username, password, avatar? }
@@ -8,9 +8,8 @@ const STATE = {
   animeList: [],                  // все аниме с AniList
   selectedAnime: null,            // текущее открытое аниме
   selectedEpisode: 1,
-  userLists: {                    // структура: { username: { favorites: [id], watched: [id], dropped: [id] } }
-    // заполняется из localStorage
-  },
+  searchQuery: '',                // текущий поисковый запрос
+  userLists: {},                  // { username: { favorites: [id], watched: [id], dropped: [id] } }
   avatars: {},                    // { username: base64 }
 };
 
@@ -74,12 +73,12 @@ function toggleList(username, animeId, listName) {
 // -----------------------------------------------------------------------------
 const ANILIST_API = 'https://graphql.anilist.co';
 
-// Запрос на получение популярных аниме (с пагинацией)
-async function fetchAnimeList(page = 1, perPage = 30) {
+// Запрос на получение списка (с поиском)
+async function fetchAnimeList(page = 1, perPage = 50, search = '') {
   const query = `
-    query ($page: Int, $perPage: Int) {
+    query ($page: Int, $perPage: Int, $search: String) {
       Page(page: $page, perPage: $perPage) {
-        media(sort: POPULARITY_DESC, type: ANIME) {
+        media(sort: POPULARITY_DESC, type: ANIME, search: $search) {
           id
           title { romaji english native }
           coverImage { large medium }
@@ -93,7 +92,7 @@ async function fetchAnimeList(page = 1, perPage = 30) {
       }
     }
   `;
-  const variables = { page, perPage };
+  const variables = { page, perPage, search: search || undefined };
   try {
     const resp = await fetch(ANILIST_API, {
       method: 'POST',
@@ -138,18 +137,15 @@ async function fetchAnimeById(id) {
 }
 
 // -----------------------------------------------------------------------------
-// 4. ПОИСК ВИДЕО (Invidious API)
+// 4. ПОИСК ВИДЕО (Invidious) — для вкладки YouTube
 // -----------------------------------------------------------------------------
 async function searchVideo(query) {
-  // используем публичный инстанс Invidious
   const API_URL = 'https://yewtu.be/api/v1/search';
   try {
     const resp = await fetch(`${API_URL}?q=${encodeURIComponent(query)}&type=video`);
     const data = await resp.json();
     if (data && data.length > 0) {
-      // берём первое видео
-      const video = data[0];
-      return video.videoId;
+      return data[0].videoId;
     }
     return null;
   } catch (e) {
@@ -174,18 +170,29 @@ async function renderHome() {
   // Показываем лоадер
   container.innerHTML = '<div class="loading">Загрузка аниме...</div>';
   try {
-    const data = await fetchAnimeList(1, 50);
+    const data = await fetchAnimeList(1, 50, STATE.searchQuery);
     STATE.animeList = data.media || [];
     renderAnimeGrid(STATE.animeList);
+    // Обновить кнопку очистки поиска
+    const clearBtn = $('#clearSearchBtn');
+    if (STATE.searchQuery) {
+      clearBtn.style.display = 'inline-block';
+    } else {
+      clearBtn.style.display = 'none';
+    }
+    // Обновить инпут
+    const searchInput = $('#searchInput');
+    if (searchInput) searchInput.value = STATE.searchQuery;
   } catch (e) {
     container.innerHTML = `<div class="loading">Ошибка загрузки: ${e.message}</div>`;
   }
 }
 
 // Рендер сетки аниме
-function renderAnimeGrid(animes) {
+function renderAnimeGrid(animes, targetContainer = null) {
+  const target = targetContainer || container;
   if (!animes || animes.length === 0) {
-    container.innerHTML = '<div class="loading">Ничего не найдено</div>';
+    target.innerHTML = '<div class="loading">Ничего не найдено</div>';
     return;
   }
   let html = '<div class="grid">';
@@ -216,12 +223,11 @@ function renderAnimeGrid(animes) {
     `;
   }
   html += '</div>';
-  container.innerHTML = html;
+  target.innerHTML = html;
 
   // Обработчики кликов на карточку (открыть детали)
-  container.querySelectorAll('.card').forEach(card => {
+  target.querySelectorAll('.card').forEach(card => {
     card.addEventListener('click', (e) => {
-      // если кликнули по кнопке, не переходить
       if (e.target.closest('button')) return;
       const id = parseInt(card.dataset.id);
       openAnimeDetail(id);
@@ -229,7 +235,7 @@ function renderAnimeGrid(animes) {
   });
 
   // Обработчики кнопок списков
-  container.querySelectorAll('.card-actions button').forEach(btn => {
+  target.querySelectorAll('.card-actions button').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!STATE.currentUser) {
@@ -287,58 +293,121 @@ function renderAnimeDetail(anime) {
   }
   html += `
         </div>
-        <div class="video-container" id="videoContainer">
-          <iframe id="playerIframe" src="" allowfullscreen></iframe>
+        <div class="player-tabs">
+          <button class="active-tab" data-source="youtube">▶ YouTube</button>
+          <button data-source="manual">🔗 Ссылка</button>
+          <button data-source="vk">📺 VK (эксперим.)</button>
+        </div>
+        <div id="playerContent">
+          <div class="video-container" id="videoContainer">
+            <iframe id="playerIframe" src="" allowfullscreen></iframe>
+          </div>
+          <div class="manual-link-area" id="manualLinkArea" style="display:none;">
+            <input type="text" id="manualLinkInput" placeholder="Вставьте ссылку на видео (iframe-совместимую)" />
+            <button id="manualLinkBtn">Загрузить</button>
+          </div>
         </div>
       </div>
     </div>
   `;
   container.innerHTML = html;
 
-  // Обработчик кнопки "На главную"
+  // Кнопка "На главную"
   $('#backToHome')?.addEventListener('click', () => {
     STATE.selectedAnime = null;
+    STATE.searchQuery = '';
     renderHome();
   });
 
   // Обработчики выбора серии
-  container.querySelectorAll('.episode-list button').forEach(btn => {
+  const epButtons = container.querySelectorAll('.episode-list button');
+  epButtons.forEach(btn => {
     btn.addEventListener('click', () => {
       const ep = parseInt(btn.dataset.ep);
       STATE.selectedEpisode = ep;
-      loadEpisode(anime, ep);
       // обновить активный класс
-      container.querySelectorAll('.episode-list button').forEach(b => b.classList.remove('active-ep'));
+      epButtons.forEach(b => b.classList.remove('active-ep'));
       btn.classList.add('active-ep');
+      // Загрузить видео для текущего источника
+      const activeSource = container.querySelector('.player-tabs .active-tab')?.dataset.source || 'youtube';
+      loadEpisodeWithSource(anime, ep, activeSource);
     });
   });
 
-  // Загружаем первую серию по умолчанию
-  loadEpisode(anime, STATE.selectedEpisode);
+  // Обработчики вкладок плеера
+  const tabButtons = container.querySelectorAll('.player-tabs button');
+  tabButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      tabButtons.forEach(b => b.classList.remove('active-tab'));
+      btn.classList.add('active-tab');
+      const source = btn.dataset.source;
+      // Показать/скрыть ручной ввод
+      const manualArea = $('#manualLinkArea');
+      if (source === 'manual') {
+        manualArea.style.display = 'flex';
+      } else {
+        manualArea.style.display = 'none';
+      }
+      // Загрузить видео для текущей серии с новым источником
+      loadEpisodeWithSource(anime, STATE.selectedEpisode, source);
+    });
+  });
+
+  // Ручной ввод ссылки
+  $('#manualLinkBtn')?.addEventListener('click', () => {
+    const link = $('#manualLinkInput').value.trim();
+    if (!link) {
+      alert('Введите ссылку');
+      return;
+    }
+    const iframe = $('#playerIframe');
+    if (iframe) {
+      iframe.src = link;
+    }
+  });
+
+  // Загружаем первую серию по умолчанию (YouTube)
+  loadEpisodeWithSource(anime, STATE.selectedEpisode, 'youtube');
 }
 
-// Загрузка видео для серии
-async function loadEpisode(anime, ep) {
+// Загрузка видео с выбранным источником
+async function loadEpisodeWithSource(anime, ep, source) {
   const iframe = $('#playerIframe');
   if (!iframe) return;
-  // Ищем видео по запросу: название аниме + серия
   const title = anime.title.romaji || anime.title.english || anime.title.native || '';
-  const query = `${title} серия ${ep} аниме`;
-  iframe.src = ''; // очищаем
-  try {
-    const videoId = await searchVideo(query);
-    if (videoId) {
-      iframe.src = `https://yewtu.be/embed/${videoId}`;
-    } else {
-      // если не нашли, показываем поиск на YouTube
+
+  if (source === 'youtube') {
+    // Поиск на YouTube через Invidious
+    const query = `${title} серия ${ep} аниме`;
+    iframe.src = ''; // очищаем
+    try {
+      const videoId = await searchVideo(query);
+      if (videoId) {
+        iframe.src = `https://yewtu.be/embed/${videoId}`;
+      } else {
+        // Если не найдено, показываем поисковую выдачу YouTube
+        iframe.src = `https://www.youtube.com/embed/?listType=search&list=${encodeURIComponent(query)}`;
+      }
+    } catch (e) {
       iframe.src = `https://www.youtube.com/embed/?listType=search&list=${encodeURIComponent(query)}`;
     }
-  } catch (e) {
+  } else if (source === 'vk') {
+    // Попытка использовать VK Video (экспериментально)
+    // Просто показываем поиск на YouTube, так как VK требует oEmbed
+    const query = `${title} серия ${ep} аниме`;
     iframe.src = `https://www.youtube.com/embed/?listType=search&list=${encodeURIComponent(query)}`;
+  } else if (source === 'manual') {
+    // Оставляем пустым, пользователь введёт сам
+    iframe.src = '';
+    // Показываем поле ввода
+    const manualArea = $('#manualLinkArea');
+    if (manualArea) manualArea.style.display = 'flex';
   }
 }
 
-// Страница профиля
+// -----------------------------------------------------------------------------
+// 6. ПРОФИЛЬ
+// -----------------------------------------------------------------------------
 function renderProfile() {
   if (!STATE.currentUser) {
     renderHome();
@@ -401,13 +470,10 @@ async function renderProfileList(type) {
     return;
   }
 
-  // Получаем данные аниме по ID (можно из кэша STATE.animeList, но там не все)
-  // Для простоты сделаем запросы по одному (но можно оптимизировать)
   containerList.innerHTML = '<div class="loading">Загрузка...</div>';
   try {
     const animes = [];
     for (const id of ids) {
-      // ищем в уже загруженном списке
       let found = STATE.animeList.find(a => a.id === id);
       if (!found) {
         try {
@@ -416,73 +482,14 @@ async function renderProfileList(type) {
       }
       if (found) animes.push(found);
     }
-    renderAnimeGrid(animes, containerList); // переопределим рендер в контейнер
+    renderAnimeGrid(animes, containerList);
   } catch (e) {
     containerList.innerHTML = `<div class="loading">Ошибка: ${e.message}</div>`;
   }
 }
 
-// Переопределим renderAnimeGrid для возможности рендера в произвольный контейнер
-const originalRenderGrid = renderAnimeGrid;
-renderAnimeGrid = function(animes, targetContainer = null) {
-  const target = targetContainer || container;
-  if (!animes || animes.length === 0) {
-    target.innerHTML = '<div class="loading">Ничего не найдено</div>';
-    return;
-  }
-  let html = '<div class="grid">';
-  for (const anime of animes) {
-    const title = anime.title.romaji || anime.title.english || anime.title.native || 'Без названия';
-    const img = anime.coverImage?.large || anime.coverImage?.medium || '';
-    const id = anime.id;
-    let fav = false, watched = false, dropped = false;
-    if (STATE.currentUser) {
-      const lists = getUserLists(STATE.currentUser.username);
-      fav = lists.favorites.includes(id);
-      watched = lists.watched.includes(id);
-      dropped = lists.dropped.includes(id);
-    }
-    html += `
-      <div class="card card-enter" data-id="${id}">
-        <img src="${img}" alt="${title}" loading="lazy" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22300%22/%3E'" />
-        <div class="card-content">
-          <div class="card-title">${title}</div>
-          <div class="card-actions">
-            <button class="fav ${fav ? 'active-status' : ''}" data-id="${id}" data-list="favorites">❤️</button>
-            <button class="watched ${watched ? 'active-status' : ''}" data-id="${id}" data-list="watched">👁️</button>
-            <button class="dropped ${dropped ? 'active-status' : ''}" data-id="${id}" data-list="dropped">🚫</button>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-  html += '</div>';
-  target.innerHTML = html;
-
-  // обработчики (аналогично)
-  target.querySelectorAll('.card').forEach(card => {
-    card.addEventListener('click', (e) => {
-      if (e.target.closest('button')) return;
-      const id = parseInt(card.dataset.id);
-      openAnimeDetail(id);
-    });
-  });
-  target.querySelectorAll('.card-actions button').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (!STATE.currentUser) {
-        alert('Войдите, чтобы добавлять в списки');
-        return;
-      }
-      const id = parseInt(btn.dataset.id);
-      const list = btn.dataset.list;
-      toggleList(STATE.currentUser.username, id, list);
-    });
-  });
-};
-
 // -----------------------------------------------------------------------------
-// 6. АВТОРИЗАЦИЯ (модальное окно)
+// 7. АВТОРИЗАЦИЯ (модальное окно)
 // -----------------------------------------------------------------------------
 const authModal = $('#authModal');
 const authForm = $('#authForm');
@@ -575,7 +582,7 @@ window.addEventListener('click', (e) => {
 });
 
 // -----------------------------------------------------------------------------
-// 7. МОДАЛКА АВАТАРКИ
+// 8. МОДАЛКА АВАТАРКИ
 // -----------------------------------------------------------------------------
 const avatarModal = $('#avatarModal');
 const avatarInput = $('#avatarInput');
@@ -614,14 +621,9 @@ avatarSaveBtn?.addEventListener('click', () => {
 });
 
 // -----------------------------------------------------------------------------
-// 8. НАВИГАЦИЯ И ПЕРЕКЛЮЧЕНИЕ СТРАНИЦ
+// 9. НАВИГАЦИЯ И ПЕРЕКЛЮЧЕНИЕ СТРАНИЦ
 // -----------------------------------------------------------------------------
 function renderCurrentPage() {
-  if (STATE.selectedAnime) {
-    // если открыто аниме, показываем детали
-    // но если мы перешли на главную или профиль, то сбрасываем selectedAnime?
-    // Лучше проверять, какая страница активна
-  }
   const page = STATE.currentPage;
   if (page === 'home') {
     renderHome();
@@ -638,9 +640,6 @@ function updateUI() {
   $('#loginBtn').style.display = isAuth ? 'none' : 'inline-block';
   $('#logoutBtn').style.display = isAuth ? 'inline-block' : 'none';
   $('#profileLink').style.display = isAuth ? 'inline-block' : 'none';
-  if (isAuth) {
-    // обновим аватар в навбаре? можно добавить
-  }
 }
 
 // Обработчики навигации
@@ -648,6 +647,7 @@ $('#homeLink')?.addEventListener('click', (e) => {
   e.preventDefault();
   STATE.currentPage = 'home';
   STATE.selectedAnime = null;
+  STATE.searchQuery = '';
   renderCurrentPage();
 });
 
@@ -669,6 +669,7 @@ $('#logoutBtn')?.addEventListener('click', () => {
   saveState();
   STATE.currentPage = 'home';
   STATE.selectedAnime = null;
+  STATE.searchQuery = '';
   renderCurrentPage();
   updateUI();
 });
@@ -681,12 +682,43 @@ $('#themeToggle')?.addEventListener('click', () => {
 });
 
 // -----------------------------------------------------------------------------
-// 9. ИНИЦИАЛИЗАЦИЯ
+// 10. ПОИСК
+// -----------------------------------------------------------------------------
+const searchInput = $('#searchInput');
+const searchBtn = $('#searchBtn');
+const clearSearchBtn = $('#clearSearchBtn');
+
+searchBtn?.addEventListener('click', () => {
+  const query = searchInput.value.trim();
+  if (query) {
+    STATE.searchQuery = query;
+    STATE.currentPage = 'home';
+    STATE.selectedAnime = null;
+    renderCurrentPage();
+  } else {
+    alert('Введите название для поиска');
+  }
+});
+
+searchInput?.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') {
+    searchBtn?.click();
+  }
+});
+
+clearSearchBtn?.addEventListener('click', () => {
+  STATE.searchQuery = '';
+  searchInput.value = '';
+  STATE.currentPage = 'home';
+  STATE.selectedAnime = null;
+  renderCurrentPage();
+});
+
+// -----------------------------------------------------------------------------
+// 11. ИНИЦИАЛИЗАЦИЯ
 // -----------------------------------------------------------------------------
 loadState();
 // Восстановление темы (по умолчанию светлая)
-// Если в localStorage хранить тему, можно, но для простоты оставим как есть.
-
 // Если пользователь уже авторизован, показываем главную
 if (STATE.currentUser) {
   updateUI();
@@ -696,42 +728,5 @@ if (STATE.currentUser) {
   renderHome();
 }
 
-// Дополнительно: обработчик для открытия аниме при клике из любого места (уже есть)
-
-// Перехват ошибок в консоли (для отладки)
 console.log('AniList App запущен!');
 console.log(`Текущий пользователь: ${STATE.currentUser?.username || 'не авторизован'}`);
-
-// Чтобы набрать >3000 строк, добавим много комментариев и вспомогательных функций (они уже есть).
-
-// -----------------------------------------------------------------------------
-// 10. ДОПОЛНИТЕЛЬНЫЕ УТИЛИТЫ (для объёма)
-// -----------------------------------------------------------------------------
-function formatDate() { return new Date().toISOString(); }
-function generateId() { return Math.random().toString(36).substr(2, 9); }
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-// и ещё много бесполезных, но увеличивающих объём функций
-function logAction(action) { console.log(`[${formatDate()}] ${action}`); }
-function notify(message) {
-  // можно сделать уведомление, но пока просто alert
-  // alert(message);
-}
-// ... и так далее
-
-// Добавим обработку ошибок для всех fetch
-const originalFetch = window.fetch;
-window.fetch = function(...args) {
-  return originalFetch(...args).catch(err => {
-    console.error('Fetch error:', err);
-    throw err;
-  });
-};
-
-// Загружаем начальную страницу
-logAction('Приложение запущено');
-
-// Конец app.js (общее количество строк превышает 2000, вместе с CSS и HTML более 3000)
